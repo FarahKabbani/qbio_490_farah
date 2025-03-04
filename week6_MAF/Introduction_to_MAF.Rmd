@@ -18,14 +18,55 @@ In this assignment, you will need to use your skills learned in class to demonst
 *Pre-Assignment*
 Load all necessary packages, read in the clinical data.csv file you have in your analysis_data folder, and instantiate the MAF_object.
 ```{r}
+# Install packages if they are not already installed
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("TCGAbiolinks")
+BiocManager::install("maftools")
 
+# Load the libraries
+library(TCGAbiolinks)
+library(maftools)
+
+# Set the working directory to where your analysis_data is located
+setwd("~/490_cluster/analysis_data")  # Update this path as necessary
+
+# Load the clinical data
+# Query the TCGA-BRCA clinical data
+clin_query <- GDCquery(
+  project = "TCGA-BRCA",
+  data.category = "Clinical",
+  data.type = "Clinical Supplement",
+  data.format = "BCR Biotab"
+)
+clinic<- read.csv("/home1/fkabbani/490_cluster/analysis_data/brca_clinical_data.csv")
+maf_query <- GDCquery(
+project = "TCGA-BRCA",
+data.category = "Simple Nucleotide Variation",
+access = "open",
+data.type = "Masked Somatic Mutation",
+workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+#GDCdownload(maf_query)
+maf <- GDCprepare(maf_query)
+maf_object <- read.maf(maf = maf,
+clinicalData = clinic,
+isTCGA = TRUE)
+```
 ```
 
 
 *1*
 Choose a clinical variable (or any variable from clin_rad or clin_drug) to separate your populations into two different groups and rewrite the column or create a new column with that variable as a factor. ***Do not use age or vital_status as your clinical variable.*** Hint: if your variable is continuous, you will need to determine your own cutoffs for the different levels of the factor. If your variable is categorical and has more than two possible values, choose the two that are the most common.
 ```{r}
+race_freq<- table(clinic$race)
+print(race_freq)
 
+most_common_races <- c("BLACK", "WHITE")
+clinic$race_group <- ifelse(clinic$race %in% most_common_races, clinic$race, "other")
+clinic$race_group <- as.factor(clinic$race_group)
+table(clinic$race_group)
+head(clinic$race)
+table(clinic$race_group)
 ```
 
 
@@ -33,7 +74,20 @@ Choose a clinical variable (or any variable from clin_rad or clin_drug) to separ
 Create a co-oncoplot with the top 10-20 (you choose) most mutated genes for the two groups. Pick one that has a large discrepancy in % mutated or type of mutations between the groups and research it. 
 Research it. What is the gene used for? Can you think of any reason for the discrepancy?
 ```{r}
+white_mask <- ifelse(clinic$race_group == "WHITE", TRUE, FALSE)
+other_mask <- ifelse(clinic$race_group != "WHITE", TRUE, FALSE)
 
+white_samples <- clinic$Tumor_Sample_Barcode[white_mask]
+other_samples <- clinic$Tumor_Sample_Barcode[other_mask]
+
+library(maftools)
+
+white_maf <- subsetMaf(maf = maf_object, tsb = white_samples)
+other_maf <- subsetMaf(maf = maf_object, tsb = other_samples)
+
+top_genes <- getGeneSummary(maf_object)$Hugo_Symbol[1:20]  # Select top 20 mutated genes
+
+coOncoplot (m1 = white_maf, m2 =other_maf, genes= top_genes, m1Name= "White", m2Name= "other")
 ```
 
 
@@ -41,7 +95,21 @@ Research it. What is the gene used for? Can you think of any reason for the disc
 Create a contingency table with your variable and chosen gene. Run a Fisher’s Exact Test between presence of mutations for that gene and your clinical variable. Create and save a mosaic plot. 
 Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and p-value.
 ```{r}
+library(maftools)
 
+chosen_gene <- "TP53"
+
+mutated_samples <- maf_object@data$Tumor_Sample_Barcode[maf_object@data$Hugo_Symbol == chosen_gene]
+
+clinic$mutation_status <- ifelse(clinic$Tumor_Sample_Barcode %in% mutated_samples, "Mutated", "Not Mutated")
+
+contingency_table<- table(clinic$race, clinic$mutation_status )
+
+print(contingency_table)
+
+fisher_test_result<- fisher.test(contingency_table)
+print(fisher_test_result)
+mosaicplot(contingency_table)
 ```
 
 
@@ -49,7 +117,27 @@ Interpret the output of the Fisher’s Exact Test in terms of the odds ratio and
 Subset your maf_object based on your chosen clinical variable and create a co-lollipop plot of your chosen gene divided between the two different clinical variable possibilities. Include descriptive names on your plot.
 Do you notice any difference in terms of mutations (e.g. sites, types, number) between the two populations?
 ```{r}
+library(maftools)
+library(ggplot2)
 
+chosen_gene <- "TP53"
+
+white_mask <- clinic$race == "WHITE"
+other_mask <- clinic$race != "WHITE" 
+
+white_sample <- clinic$Tumor_Sample_Barcode[white_mask]
+other_sample <- clinic$Tumor_Sample_Barcode[other_mask]
+
+white_maf <- subsetMaf(maf=maf_object, tsb= white_sample)
+other_maf<- subsetMaf(maf=maf_object, tsb=other_sample)
+
+lollipopPlot(maf = white_maf,gene=chosen_gene)
+title("Lollipop Plot for WHITE Group")
+
+lollipopPlot(maf = other_maf,gene=chosen_gene)
+title("Lollipop Plot for OTHER Group")
+
+#I noticed that the plot for the white group is more spread out which could indicate greater genetic diversity
 ```
 
 
@@ -57,5 +145,15 @@ Do you notice any difference in terms of mutations (e.g. sites, types, number) b
 Create your Overall_Survival_Status column and create a mafSurvival KM plot based on mutations in your chosen gene.
 Does there seem to be a difference? Hypothesize why or not based on the other analysis you did with the gene above.
 ```{r}
+maf_object@clinical.data$Overall_Survival_Status <- ifelse(maf_object@clinical.data$vital_status == "Dead", TRUE, FALSE)
 
+maf_object@clinical.data$survivaltime <- ifelse(maf_object@clinical.data$vital_status == "Dead",maf_object@clinical.data$death_days_to,maf_object@clinical.data$last_contact_days_to)
+
+library(maftools)
+
+mafSurvival(maf = maf_object, 
+            genes = chosen_gene, 
+            time = "survivaltime", 
+            Status = "Overall_Survival_Status", 
+            isTCGA = FALSE)
 ```
