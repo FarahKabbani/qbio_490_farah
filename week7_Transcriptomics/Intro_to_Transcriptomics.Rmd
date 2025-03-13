@@ -18,18 +18,79 @@ In SummarizedExperiment Tutorial, you learned how to manipulate the SummarizedEx
 *Pre-Assignment*
 Use knitr function to set your working directory to your analysis_data folder in 490_cluster.
 ```{r setup}
- knitr::opts_knit$set(root.dir = normalizePath("/PATH/TO/analysis_data"))
+ knitr::opts_knit$set(root.dir = normalizePath("/home1/fkabbani/490_cluster/analysis_data"))
 ```
 
 If DESeq2 is not already installed, install it now
 ```{r}
 if (!require("DESeq2", quietly = TRUE))
 BiocManager::install("DESeq2")
+#BiocManager::install("EnhancedVolcano")
+library(EnhancedVolcano)
 ```
 
 Load in all necessary packages
 ```{r}
+# install, only if needed, and load packages (SummarizedExperiment and TCGAbiolinks)
+if (!require("SummarizedExperiment", quietly = TRUE))
+  BiocManager::install("SummarizedExperiment")
 
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+#library(EnhancedVolcano)
+
+knitr::opts_knit$set(root.dir = normalizePath("/home1/fkabbani/490_cluster/analysis_data")) 
+```
+
+
+```{r Package Setup}
+# install, only if needed, and load packages (SummarizedExperiment and TCGAbiolinks)
+if (!require("SummarizedExperiment", quietly = TRUE))
+  BiocManager::install("SummarizedExperiment")
+
+library(TCGAbiolinks)
+library(SummarizedExperiment)
+
+# Install packages if they are not already installed
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("TCGAbiolinks")
+BiocManager::install("maftools")
+
+# Load the libraries
+library(TCGAbiolinks)
+library(maftools)
+
+# Set the working directory to where your analysis_data is located
+setwd("~/490_cluster/analysis_data")  # Update this path as necessary
+
+# Load the clinical data
+# Query the TCGA-BRCA clinical data
+clin_query <- GDCquery(
+  project = "TCGA-BRCA",
+  data.category = "Clinical",
+  data.type = "Clinical Supplement",
+  data.format = "BCR Biotab"
+)
+clinic<- read.csv("/home1/fkabbani/490_cluster/analysis_data/brca_clinical_data.csv")
+maf_query <- GDCquery(
+project = "TCGA-BRCA",
+data.category = "Simple Nucleotide Variation",
+access = "open",
+data.type = "Masked Somatic Mutation",
+workflow.type = "Aliquot Ensemble Somatic Variant Merging and Masking"
+)
+#GDCdownload(maf_query)
+maf <- GDCprepare(maf_query)
+maf_object <- read.maf(maf = maf,
+clinicalData = clinic,
+isTCGA = TRUE)
+
+rna_query <- GDCquery(project ="TCGA-BRCA",
+data.category = "Transcriptome Profiling",
+data.type = "Gene Expression Quantification",
+workflow.type = "STAR - Counts")
+GDCdownload(rna_query)
+rna_se <- GDCprepare(rna_query)
 ```
 
 
@@ -38,8 +99,9 @@ Load in all necessary packages
 Read in the rna_clinical, rna_genes, and rna_counts dataframes which you made in the "SummarizedExperiment Guided Tutorial" R Notebook
 
 ```{r}
-
-
+head(rna_se)
+str(rna_se)
+#View(rna_se)
 ```
 
 
@@ -48,29 +110,57 @@ In this assignment, you will run differential expression analysis comparing pati
 
 Manipulate those columns so that they are ready for differential expression analysis (hint: what kind of variables are they? what data type are they by default? do you need to handle unknown values?) Filter out genes with a total expression across all patients less than 1000.
 ```{r}
+# Filter out rows with missing values for key variables
+rna_counts <- rna_counts[, !is.na(rna_clinical$age_at_diagnosis) & 
+                          !is.na(rna_clinical$definition)]
 
+rna_clinical <- rna_clinical[!is.na(rna_clinical$age_at_diagnosis) & 
+                             !is.na(rna_clinical$definition), ]
 
+# Remove solid tissue normal samples
+no_solid_tissue_mask <- rna_clinical$sample_type != "Solid Tissue Normal"
+rna_clinical <- rna_clinical[no_solid_tissue_mask, ]
+rna_counts <- rna_counts[, no_solid_tissue_mask]
+
+# Correctly convert relevant columns to factors
+rna_clinical$definition <- factor(rna_clinical$definition)
+rna_clinical$paper_BRCA_Subtype_PAM50 <- factor(rna_clinical$paper_BRCA_Subtype_PAM50)
+
+# Filter genes with total counts >= 1000
+gene_sums <- rowSums(rna_counts)
+keep_genes <- gene_sums >= 1000
+rna_counts_filtered <- rna_counts[keep_genes, ]
+
+rownames(rna_counts_filtered)<- NULL
+colnames(rna_counts_filtered)<- NULL
 ```
 
 
 *3*
 Perform the differential expression analysis, All you need to do is fill in the appropriate # terms
 ```{r}
-dds <- DESeqDataSetFromMatrix(countData = #fill in,
-                              colData = #fill in,
-                              design= #fill in)
+dds <- DESeqDataSetFromMatrix(countData = rna_counts_filtered,  
+                              colData = rna_clinical,  
+                              design = ~ age_at_diagnosis + definition)
 
-dds_obj <- DESeq(dds)
+dds_obj <- DESeq(dds)  
 
-resultsNames(dds_obj)
+resultsNames(dds_obj)  
 
-results <- results(dds_obj, format = "DataFrame", contrast = c(#variable name, #numerator , #denominator))
+results <- results(dds_obj, format = "DataFrame", contrast = c("definition", "Primary solid Tumor", "Metastatic"))
 
-results <- data.frame(results)
+results <- data.frame(results)  
+write.csv(results,"/home1/fkabbani/490_cluster/analysis_data/transcriptomics_results.csv")
 ```
 
 Prepare results dataframe for EnhancedVolcano plotting. Add two columns, "-log10(padj)" and "gene_name". Fill in these columns appropriately.
 ```{r}
+#results_df <- data.frame(results)
+results[,"gene_name"] <- rna_clinical$gene_name
+results[,"-log10(padj)"] <- -log10(as.numeric(results$padj))
+#results_df <- results_df[!is.na(results_df$padj), ]  
+#results_df$padj[results_df$padj < 1e-300] <- 1e-300
+
 
 ```
 
@@ -88,11 +178,11 @@ EnhancedVolcano(results,
 
 *5*
 # Explain what genes from each part of the Volcano Plot mean in terms of their significance and up/down regulation. 
-top-right genes: 
-bottom-right genes: 
-top-left genes: 
-bottom-left genes: 
-top-middle genes: 
-bottom-middle genes: 
+top-right genes: Gene is upregulated and significant
+bottom-right genes: Gene is upregulated and insignificant
+top-left genes: Gene is downregulated but statistically significant
+bottom-left genes: Gene is downregulated and insignificant
+top-middle genes: There is no major change in expression but statistically significant 
+bottom-middle genes: There is no major change in expression
 
 Save the picture of the volcano plot (using either ggsave() or right clicking and manually downloading the image and push this .Rmd and the image to GitHub)
